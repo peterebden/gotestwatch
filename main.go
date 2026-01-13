@@ -84,6 +84,7 @@ func run() error {
 		if err := runTests(pkg, revdeps[pkg.ImportPath], filename); err != nil {
 			fmt.Printf("Tests failed: %s\n", err)
 		}
+		fmt.Println("")
 	}
 	return nil
 }
@@ -120,18 +121,19 @@ type Package struct {
 	TestGoFiles    []string `json:"TestGoFiles"`
 	XTestGoFiles   []string `json:"XTestGoFiles"`
 	EmbedFiles     []string `json:"EmbedFiles"`
-	Module         struct {
+	// TODO(peter): We might need to think about cgo here? Are there any other file types on this thing?
+	Module struct {
 		Path string `json:"Path"`
 	} `json:"Module"`
 }
 
 // buildRevdeps builds a reverse dependency map of all tests that depend on each package.
-func buildRevdeps(pkgs map[string]*Package) map[string][]string {
-	revdeps := map[string][]string{}
+func buildRevdeps(pkgs map[string]*Package) map[string][]*Package {
+	revdeps := map[string][]*Package{}
 	for _, pkg := range pkgs {
 		for _, dep := range pkg.Deps {
 			if strings.HasPrefix(dep, pkg.Module.Path) {
-				revdeps[dep] = append(revdeps[dep], pkg.ImportPath)
+				revdeps[dep] = append(revdeps[dep], pkg)
 			}
 		}
 	}
@@ -139,7 +141,7 @@ func buildRevdeps(pkgs map[string]*Package) map[string][]string {
 }
 
 // runTests runs all affected tests when an individual file changes
-func runTests(pkg *Package, revdeps []string, filename string) error {
+func runTests(pkg *Package, revdeps []*Package, filename string) error {
 	if len(revdeps) == 0 {
 		fmt.Println("No affected tests to run")
 		return nil
@@ -151,14 +153,28 @@ func runTests(pkg *Package, revdeps []string, filename string) error {
 	}
 	if slices.Contains(pkg.TestGoFiles, filename) || slices.Contains(pkg.XTestGoFiles, filename) {
 		// A change to a test file means we're just running this test. That's fine.
-		revdeps = []string{pkg.ImportPath}
+		revdeps = []*Package{pkg}
+	} else {
+		// Include this package, which isn't in the list because it doesn't depend on itself
+		revdeps = append(revdeps, pkg)
 	}
-	if len(revdeps) == 1 {
+	// Only run tests in packages that have tests in them
+	revdeps = slices.DeleteFunc(slices.Clone(revdeps), func(pkg *Package) bool {
+		return len(pkg.TestGoFiles) == 0 && len(pkg.XTestGoFiles) == 0
+	})
+	paths := make([]string, len(revdeps))
+	for i, pkg := range revdeps {
+		paths[i] = pkg.ImportPath
+	}
+	if len(revdeps) == 0 {
+		fmt.Println("No affected tests to run")
+		return nil
+	} else if len(revdeps) == 1 {
 		fmt.Println("Running tests in 1 package...")
 	} else {
 		fmt.Printf("Running tests in %d packages...", len(revdeps))
 	}
-	args := append([]string{"test"}, revdeps...)
+	args := append([]string{"test"}, paths...)
 	cmd := exec.Command("go", args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
