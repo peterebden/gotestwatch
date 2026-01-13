@@ -123,7 +123,7 @@ type Package struct {
 	EmbedFiles     []string `json:"EmbedFiles"`
 	TestImports    []string `json:"TestImports"`
 	XTestImports   []string `json:"XTestImports"`
-	// TODO(peter): We might need to think about cgo here? Are there any other file types on this thing?
+	// TODO(peter): We might need to think about cgo here? Are there any other relevant file types on this thing?
 	Module struct {
 		Path string `json:"Path"`
 	} `json:"Module"`
