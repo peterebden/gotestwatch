@@ -121,6 +121,8 @@ type Package struct {
 	TestGoFiles    []string `json:"TestGoFiles"`
 	XTestGoFiles   []string `json:"XTestGoFiles"`
 	EmbedFiles     []string `json:"EmbedFiles"`
+	TestImports    []string `json:"TestImports"`
+	XTestImports   []string `json:"XTestImports"`
 	// TODO(peter): We might need to think about cgo here? Are there any other file types on this thing?
 	Module struct {
 		Path string `json:"Path"`
@@ -134,6 +136,13 @@ func buildRevdeps(pkgs map[string]*Package) map[string][]*Package {
 		for _, dep := range pkg.Deps {
 			if strings.HasPrefix(dep, pkg.Module.Path) {
 				revdeps[dep] = append(revdeps[dep], pkg)
+			}
+		}
+		// Deps don't include test deps.
+		// TODO(peter): These import fields aren't recursive so we could miss something.
+		for _, imp := range append(pkg.TestImports, pkg.XTestImports...) {
+			if strings.HasPrefix(imp, pkg.Module.Path) && !slices.Contains(revdeps[imp], pkg) {
+				revdeps[imp] = append(revdeps[imp], pkg)
 			}
 		}
 	}
@@ -178,5 +187,9 @@ func runTests(pkg *Package, revdeps []*Package, filename string) error {
 	cmd := exec.Command("go", args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	fmt.Println("Tests passed")
+	return nil
 }
