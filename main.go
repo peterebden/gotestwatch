@@ -21,13 +21,13 @@ func main() {
 	flag.Parse()
 	if *dir != "" {
 		if err := os.Chdir(*dir); err != nil {
-			fmt.Printf("%s\n", err)
+			fmt.Printf("Failed to change directory to %s: %s\n", *dir, err)
 			os.Exit(1)
 		}
 	}
 
 	if err := run(); err != nil {
-		fmt.Printf("%s\n", err)
+		fmt.Printf("Running gotestwatch failed: %s\n", err)
 		os.Exit(1)
 	}
 }
@@ -40,7 +40,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to run `go env GOMOD`: %w", err)
 	}
-	dir := filepath.Dir(strings.TrimSpace(string(out)))
+	gomod := strings.TrimSpace(string(out))
+	if gomod == "" || gomod == "/dev/null" {
+		return fmt.Errorf("the current directory is not within a Go module")
+	}
+	dir := filepath.Dir(gomod)
 	// Move there for simplicity
 	if err := os.Chdir(dir); err != nil {
 		return fmt.Errorf("failed to change to %s: %w", dir, err)
@@ -56,7 +60,7 @@ func run() error {
 		return fmt.Errorf("failed to set up filesystem watcher: %w", err)
 	}
 	for dir := range pkgs {
-		// N.B. CloseWrite is an extension I added. It doesn't work on all platforms.
+		// N.B. UnportableCloseWrite is normally unexported. It doesn't work on all platforms.
 		if err := w.AddWith(dir, fsnotify.WithOps(fsnotify.UnportableCloseWrite)); err != nil {
 			return fmt.Errorf("failed to set up watch on %s: %w", dir, err)
 		}
