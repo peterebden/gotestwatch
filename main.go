@@ -172,7 +172,7 @@ func runTests(pkg *Package, revdeps []*Package, filename string) error {
 	} else if len(revdeps) == 1 {
 		fmt.Println("Running tests in 1 package...")
 	} else {
-		fmt.Printf("Running tests in %d packages...", len(revdeps))
+		fmt.Printf("Running tests in %d packages...\n", len(revdeps))
 	}
 	args := append([]string{"test"}, paths...)
 	cmd := exec.Command("go", args...)
