@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,15 @@ import (
 )
 
 func main() {
+	dir := flag.String("d", "", "Directory to start in")
+	flag.Parse()
+	if *dir != "" {
+		if err := os.Chdir(*dir); err != nil {
+			fmt.Printf("%s\n", err)
+			os.Exit(1)
+		}
+	}
+
 	if err := run(); err != nil {
 		fmt.Printf("%s\n", err)
 		os.Exit(1)
@@ -64,9 +74,11 @@ func run() error {
 		// TODO(peter): we might want some debouncing here
 		fmt.Printf("%s changed\n", event.Name)
 		dir, filename := filepath.Split(event.Name)
+		dir = strings.TrimSuffix(dir, "/")
 		pkg, present := pkgs[dir]
 		if !present {
 			fmt.Printf("unknown package %s (from %s)\n", dir, event.Name)
+			continue
 		}
 		// Run affected tests
 		if err := runTests(pkg, revdeps[pkg.ImportPath], filename); err != nil {
