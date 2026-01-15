@@ -12,9 +12,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
+
+const debouncePeriod = 200 * time.Millisecond
 
 func main() {
 	dir := flag.String("d", "", "Directory to start in")
@@ -75,22 +78,38 @@ func run() error {
 		}
 	}()
 	for event := range w.Events {
-		// TODO(peter): we might want some debouncing here
-		fmt.Printf("%s changed\n", event.Name)
-		dir, filename := filepath.Split(event.Name)
-		dir = strings.TrimSuffix(dir, "/")
-		pkg, present := pkgs[dir]
-		if !present {
-			fmt.Printf("unknown package %s (from %s)\n", dir, event.Name)
-			continue
+		fmt.Printf("%s changed", event.Name)
+		events := debounceFor(w.Events, debouncePeriod)
+		if len(events) != 0 {
+			fmt.Printf(" (and %d others)\n", len(events))
+		} else {
+			fmt.Println("")
+		}
+		filenames := []string{event.Name}
+		for _, event := range events {
+			filenames = append(filenames, event.Name)
 		}
 		// Run affected tests
-		if err := runTests(pkg, revdeps[pkg.ImportPath], filename); err != nil {
+		if err := runAllTests(pkgs, revdeps, filenames); err != nil {
 			fmt.Printf("Tests failed: %s\n", err)
 		}
 		fmt.Println("")
 	}
 	return nil
+}
+
+// debounceFor reads all events from a channel for up to the given period of time.
+func debounceFor[T any](ch <-chan T, duration time.Duration) []T {
+	deadline := time.After(duration)
+	events := []T{}
+	for {
+		select {
+		case t := <-ch:
+			events = append(events, t)
+		case <-deadline:
+			return events
+		}
+	}
 }
 
 // loadPackages finds all Go packages within this module
@@ -153,39 +172,63 @@ func buildRevdeps(pkgs map[string]*Package) map[string][]*Package {
 	return revdeps
 }
 
-// runTests runs all affected tests when an individual file changes
-func runTests(pkg *Package, revdeps []*Package, filename string) error {
+// testsToRun returns the affected set of test packages that should be run
+func testsToRun(pkg *Package, revdeps []*Package, filenames []string) []*Package {
 	if len(revdeps) == 0 {
-		fmt.Println("No affected tests to run")
 		return nil
 	}
-	// Check if this file affects anything
-	if slices.Contains(pkg.IgnoredGoFiles, filename) {
-		fmt.Println("File is excluded by build constraints")
+	// Excise any files that are ignored (e.g. excluded by build constraints)
+	filenames = slices.DeleteFunc(filenames, func(filename string) bool {
+		return slices.Contains(pkg.IgnoredGoFiles, filename)
+	})
+	if len(filenames) == 0 {
 		return nil
 	}
-	if slices.Contains(pkg.TestGoFiles, filename) || slices.Contains(pkg.XTestGoFiles, filename) {
-		// A change to a test file means we're just running this test. That's fine.
-		revdeps = []*Package{pkg}
-	} else {
-		// Include this package, which isn't in the list because it doesn't depend on itself
-		revdeps = append(revdeps, pkg)
+	toRun := slices.Clone(revdeps)
+	// If all files are test files, then we are just running this test
+	if allFunc(filenames, func(filename string) bool {
+		return slices.Contains(pkg.TestGoFiles, filename) || slices.Contains(pkg.XTestGoFiles, filename)
+	}) {
+		return []*Package{pkg}
+	}
+	// Include this package, which isn't in the list because it doesn't depend on itself
+	return append(toRun, pkg)
+}
+
+// runAllTests runs all tests possibly affected by changes to the given files
+func runAllTests(pkgs map[string]*Package, revdeps map[string][]*Package, filenames []string) error {
+	byDir := map[string][]string{}
+	for _, filename := range filenames {
+		dir, filename := filepath.Split(filename)
+		dir = strings.TrimSuffix(dir, "/")
+		byDir[dir] = append(byDir[dir], filename)
+	}
+	toRun := []*Package{}
+	for dir, files := range byDir {
+		pkg, present := pkgs[dir]
+		if !present {
+			continue
+		}
+		toRun = append(toRun, testsToRun(pkg, revdeps[pkg.ImportPath], files)...)
 	}
 	// Only run tests in packages that have tests in them
-	revdeps = slices.DeleteFunc(slices.Clone(revdeps), func(pkg *Package) bool {
+	toRun = slices.DeleteFunc(toRun, func(pkg *Package) bool {
 		return len(pkg.TestGoFiles) == 0 && len(pkg.XTestGoFiles) == 0
 	})
-	paths := make([]string, len(revdeps))
-	for i, pkg := range revdeps {
+	paths := make([]string, len(toRun))
+	for i, pkg := range toRun {
 		paths[i] = pkg.ImportPath
 	}
-	if len(revdeps) == 0 {
+	// Make these unique
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+	if len(paths) == 0 {
 		fmt.Println("No affected tests to run")
 		return nil
-	} else if len(revdeps) == 1 {
+	} else if len(paths) == 1 {
 		fmt.Println("Running tests in 1 package...")
 	} else {
-		fmt.Printf("Running tests in %d packages...\n", len(revdeps))
+		fmt.Printf("Running tests in %d packages...\n", len(paths))
 	}
 	args := append([]string{"test"}, paths...)
 	cmd := exec.Command("go", args...)
@@ -196,4 +239,13 @@ func runTests(pkg *Package, revdeps []*Package, filename string) error {
 	}
 	fmt.Println("Tests passed")
 	return nil
+}
+
+func allFunc[S ~[]E, E any](s S, f func(E) bool) bool {
+	for _, x := range s {
+		if !f(x) {
+			return false
+		}
+	}
+	return true
 }
